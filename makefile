@@ -3,7 +3,7 @@ COMP = mpic++
 
 CFLAGS+=-std=c++17
 #CFLAGS+=-O3
-CLFAGS+=-DEIGEN_VECTORIZE_AVX512
+#CLFAGS+=-DEIGEN_VECTORIZE_AVX512
 
 PREFIX ?= .
 LIB_DIR = $(PREFIX)/lib
@@ -22,7 +22,6 @@ LIB = $(OBJ_DIR)/libjrad.a
 all: $(EXEC) $(LIB)
 
 debug: CFLAGS += -g
-debug: CFLAGS += -DEIGEN_MAX_ALIGN_BYTES=64
 debug: all
 
 install: all install-incs install-lib
