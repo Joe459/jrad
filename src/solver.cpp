@@ -8,59 +8,30 @@
 #include <iostream>
 #include <fstream>
 #include <string>
+#include <eigen3/Eigen/StdVector>
 
 using namespace std;
 using namespace Eigen;
 
 typedef Vector<float, 4> four_vec;
 typedef Vector<float, 3> three_vec;
-typedef Matrix<float,4,4> field_mat;
+typedef Matrix<float,4,4, DontAlign> field_mat;
 const Matrix<float, 4, 4> I = Matrix<float, 4, 4>::Identity();
 const Vector<float,4> metric_ = {1.0,-1.0,-1.0,-1.0};
 
 #define N_TIME_STATES 200
-#define N_PARTICLES 10
+#define N_PARTICLES 2
 #define c 299.97f //micrometers / picosecond
-#define dt 0.1f //picoseconds
+#define dt 0.01f //picoseconds
 #define e 4.8032e-10f * 1e6f / 1e12f //esu converted to micrometers and picoseconds
 #define m 9.1095e-28f //grams
 
 //external electric field should be converted to these modified gaussian units
 
 struct particle_state {
-	
 	four_vec x;
 	four_vec U;
-	Matrix<float,4,4> F;
-	
-	void update_field(three_vec E, three_vec B){
-		
-		F(0,seq(1,3)) -= E;
-		F(seq(1,3),0) += E;
-		
-		F(1,2) -= B(2);
-		F(2,1) += B(2);
-		F(3,1) -= B(1);
-		F(1,3) += B(1);
-		F(2,3) -= B(0);
-		F(3,2) += B(0);
-		
-	}
 };
-
-void set_field(field_mat &F,three_vec E, three_vec B){
-	
-	F <<  0 ,  -E(0), -E(1), E(2),
-	    E(0),    0  , -B(2), B(1),
-	    E(1),  -B(2),   0  ,-B(0),
-	    E(2),  -B(1),  B(0),  0  ;
-	
-}
-
-void field_add(field_mat *in, field_mat *inout, int *len, MPI_Datatype *dptr ){
-	for (int i = 0; i < *len; i++) 	
-		inout[i] += in[i];
-} 
 
 std::ofstream profile_fs;
  
@@ -68,7 +39,7 @@ float dtau;
  
 vector<vector<particle_state>> phase_space_;
 vector<particle_state> receiving_states;
-std::vector<field_mat> fields;
+std::vector<field_mat> F;
 
 int rank_;
 int size_;
@@ -79,6 +50,33 @@ MPI_Datatype MPI_FIELDS;
 MPI_Status status;
 MPI_Op FIELD_ADD_OP;
 
+
+void update_field(field_mat &F, three_vec E, three_vec B){
+	
+	F(0,seq(1,3)) -= E;
+	F(seq(1,3),0) += E;
+	
+	F(1,2) -= B(2);
+	F(2,1) += B(2);
+	F(3,1) -= B(1);
+	F(1,3) += B(1);
+	F(2,3) -= B(0);
+	F(3,2) += B(0);
+	
+}
+
+void set_field(field_mat &F,three_vec E, three_vec B){
+	F <<  0 ,  -E(0), -E(1), E(2),
+	    E(0),    0  , -B(2), B(1),
+	    E(1),  -B(2),   0  ,-B(0),
+	    E(2),  -B(1),  B(0),  0  ;
+}
+
+void field_add(field_mat *in, field_mat *inout, int *len, MPI_Datatype *dptr ){
+	for (int i = 0; i < *len; i++) 	
+		inout[i] += in[i];
+} 
+
 void print_states(){
 	
 	if (profile_fs)
@@ -86,7 +84,7 @@ void print_states(){
 			profile_fs << phase_space_[step % N_TIME_STATES][j].x.transpose() << endl;
 			profile_fs << phase_space_[step % N_TIME_STATES][j].U.transpose() << endl;
 		}
-	}
+}
 
 void distribute_particles(){
 		
@@ -113,40 +111,16 @@ void distribute_particles(){
 			phase_space_[time_idx] = phase_space_[0];
 			for (particle_state &state : phase_space_[time_idx]){
 				state.x(0) = -(N_TIME_STATES-time_idx) * dt;
+				state.x(seq(1,3)) += state.x(0) * state.U(seq(1,3)) * c / state.U(0)
 			}	
 		}
 	}
 
 	receiving_states.resize(n_particles_);
-
-	MPI_Type_contiguous(sizeof(particle_state)*n_particles_,MPI_BYTE,&MPI_PARTICLE_STATES);
-	MPI_Type_commit(&MPI_PARTICLE_STATES);
-	MPI_Type_contiguous(sizeof(Matrix<float,4,4>)*n_particles_,MPI_BYTE,&MPI_FIELDS);
-	MPI_Type_commit(&MPI_FIELDS);
+	F.resize(n_particles_);
 	
 }
 
-void push_particles()
-{	
-	
-	particle_state prev_state;
-	
-	for (int j = 0; j < n_particles_; ++j){
-		
-		prev_state = phase_space_[(step - 1 + N_TIME_STATES) % N_TIME_STATES];
-		dtau = dt / prev_state.U(0);
-		
-		phase_space_[step % N_TIME_STATES].U = (I - 0.5f * dtau * e / m / c * prev_state.F).inverse() * (I + 0.5f * e / m / c * dtau * state.F) * (metric_.cwiseProduct(state.U));
-		
-	}
-	for (particle_state &state : phase_space_[step % N_TIME_STATES])
-	{
-		const four_vec next_U = (I - 0.5f * dtau * e / m / c * state.F).inverse() * (I + 0.5f * e / m / c * dtau * state.F) * (metric_.cwiseProduct(state.U));		
-		state.x = state_prev.x + 0.5f * (state.U + next_U) * dtau * c;
-		state.U = next_U;
-		state.F.setZero();
-	}
-}
 
 inline std::pair<three_vec,three_vec> lienard_wiechert_fields(float gamma, three_vec beta, three_vec accel,three_vec pos){
 	
@@ -169,7 +143,7 @@ void update_fields()
 	// Iterate through neighboring ranks (including my own)
 	for (int rank_idx = 0; rank_idx < size_; ++rank_idx){
 	
-		//MPI_Scatter(phase_space_[step % N_TIME_STATES].data(),1,MPI_PARTICLE_STATES, receiving_states.data(),1,MPI_PARTICLE_STATES,rank_idx,MPI_COMM_WORLD);
+		MPI_Scatter(phase_space_[step % N_TIME_STATES].data(),n_particles_,MPI_PARTICLE_STATES, receiving_states.data(),n_particles_,MPI_PARTICLE_STATES,rank_idx,MPI_COMM_WORLD);
 		//MPI_Sendrecv(phase_space_[step % N_TIME_STATES].data(),1,MPI_PARTICLE_STATES, (rank_idx + rank_) % size_ , 0 ,receiving_states.data(),1,MPI_PARTICLE_STATES, (rank_idx + rank_ - 1  + size_ ) % size_, 0 , MPI_COMM_WORLD,&status);
 		
 		// Iterate through the particles acted UPON (Receiving particles)
@@ -205,8 +179,8 @@ void update_fields()
 					std::pair<three_vec,three_vec> fields = lienard_wiechert_fields(
 					  emitting_mom(0), emitting_mom(seq(1,3)), emitting_accel, receiving_states[j].x(seq(1,3)) - emitting_x(seq(1,3)));
 					
-					receiving_states[j].update_field(fields.first,fields.second);
-					  
+					//receiving_states[j].update_field(fields.first,fields.second);
+					update_field(F[j],fields.first,fields.second);
 				}
 				
 				// The receiving particle is very far
@@ -249,7 +223,7 @@ void update_fields()
 					//receiving_states[j].update_field( 
 					//	(outer_fields.first - inner_fields.first) /  (outer_arm_len - inner_arm_len) * (receiving_states[j].x(seq(1,3)) - emitting_x_inner(seq(1,3))).norm() + inner_fields.first,
 					//	(outer_fields.second - inner_fields.second) /  (outer_arm_len - inner_arm_len) * (receiving_states[j].x(seq(1,3)) - emitting_x_inner(seq(1,3))).norm() + inner_fields.second);
-					set_field(&fields[j],
+					update_field(F[j],
 						(outer_fields.first - inner_fields.first) /  (outer_arm_len - inner_arm_len) * (receiving_states[j].x(seq(1,3)) - emitting_x_inner(seq(1,3))).norm() + inner_fields.first,
 						(outer_fields.second - inner_fields.second) /  (outer_arm_len - inner_arm_len) * (receiving_states[j].x(seq(1,3)) - emitting_x_inner(seq(1,3))).norm() + inner_fields.second);
 				
@@ -257,14 +231,37 @@ void update_fields()
 			}	
 		}
 		
-		//if(rank_ == rank_idx)
-		//	MPI_Reduce(MPI_IN_PLACE, fields.data(), 1, MPI_FIELDS, FIELD_ADD_OP, rank_idx, MPI_COMM_WORLD);
-		//else
-		//	MPI_Reduce(fields.data(), fields.data(), 1, MPI_FIELDS, FIELD_ADD_OP, rank_idx, MPI_COMM_WORLD);
-
-		MPI_Sendrecv(receiving_states.data(),1,MPI_PARTICLE_STATES, (rank_idx + rank_) % size_ , 1 ,phase_space_[step % N_TIME_STATES].data(), 1 ,MPI_PARTICLE_STATES, (rank_idx + rank_ - 1  + size_ ) % size_, 1 , MPI_COMM_WORLD, &status);
+		
+		if(rank_ == rank_idx){				
+			MPI_Reduce(MPI_IN_PLACE, F.data(), n_particles_, MPI_FIELDS, FIELD_ADD_OP, rank_idx, MPI_COMM_WORLD);
+		}
+		else {
+			MPI_Reduce(F.data(), NULL, n_particles_, MPI_FIELDS, FIELD_ADD_OP, rank_idx, MPI_COMM_WORLD);
+		}
+		//MPI_Sendrecv(receiving_states.data(),1,MPI_PARTICLE_STATES, (rank_idx + rank_) % size_ , 1 ,phase_space_[step % N_TIME_STATES].data(), 1 ,MPI_PARTICLE_STATES, (rank_idx + rank_ - 1  + size_ ) % size_, 1 , MPI_COMM_WORLD, &status);
 	}	
 }
+
+void push_particles()
+{	
+	
+	particle_state prev_state;
+	
+	for (int j = 0; j < n_particles_; ++j){
+		
+		prev_state = phase_space_[(step - 1 + N_TIME_STATES) % N_TIME_STATES][j];
+		
+		dtau = dt / prev_state.U(0);
+		
+		phase_space_[step % N_TIME_STATES][j].U = (I - 0.5f * dtau * e / m / c * F[j]).inverse() * (I + 0.5f * e / m / c * dtau * F[j]) * (metric_.cwiseProduct(prev_state.U));
+		phase_space_[step % N_TIME_STATES][j].x = prev_state.x + 0.5f * (prev_state.U + phase_space_[step % N_TIME_STATES][j].U) * dtau * c;
+		phase_space_[step % N_TIME_STATES][j].x(0) /= c;
+		
+		F[j].setZero();
+	}
+
+}
+
 
 int main(int argc, char **argv)
 {
@@ -273,15 +270,20 @@ int main(int argc, char **argv)
 	MPI_Comm_rank(MPI_COMM_WORLD,&rank_);
     MPI_Comm_size(MPI_COMM_WORLD,&size_);
 	
-	MPI_Op_create((MPI_User_function*)field_add, true, &FIELD_ADD_OP);
 	
-	profile_fs.open("../bunch-prof/" + std::to_string(rank_) + ".txt",
-	std::ios::out |
+	profile_fs.open("./bunch-prof/" + std::to_string(rank_) + ".txt",
 	std::ios::trunc);  
-	
+
 	distribute_particles();
 	
-	while(step < 4){
+	MPI_Op_create((MPI_User_function*)field_add, true, &FIELD_ADD_OP);
+	MPI_Type_contiguous(sizeof(particle_state),MPI_BYTE, &MPI_PARTICLE_STATES);
+	MPI_Type_commit(&MPI_PARTICLE_STATES);
+	MPI_Type_contiguous(sizeof(field_mat),MPI_BYTE, &MPI_FIELDS);
+	MPI_Type_commit(&MPI_FIELDS);
+	
+	
+	while(step < 1){
 		update_fields();
 		push_particles();
 		print_states();
@@ -289,5 +291,9 @@ int main(int argc, char **argv)
 	}
 	
 	profile_fs.close();
+
+	MPI_Op_free(&FIELD_ADD_OP);
+	MPI_Finalize();
+	
 
 }

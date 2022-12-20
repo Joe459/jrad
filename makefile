@@ -3,24 +3,26 @@ COMP = mpic++
 
 CFLAGS+=-std=c++17
 #CFLAGS+=-O3
+CLFAGS+=-DEIGEN_VECTORIZE_AVX512
 
 PREFIX ?= .
 LIB_DIR = $(PREFIX)/lib
 INC_DIR = $(PREFIX)/include/
 
-EXEC = prj/RADRAD
+EXEC = ./JRAD
 SRC_DIR = src
 SRCS := $(shell find $(SRC_DIR)/*.cpp)
 HDRS := $(shell find $(SRC_DIR)/*.h)
 OBJ_DIR = obj
 OBJS := $(SRCS:$(SRC_DIR)/%.cpp=$(OBJ_DIR)/%.o)
-LIB = $(OBJ_DIR)/libradrad.a
+LIB = $(OBJ_DIR)/libjrad.a
 
 .PHONY: all clean debug install
 
 all: $(EXEC) $(LIB)
 
 debug: CFLAGS += -g
+debug: CFLAGS += -DEIGEN_MAX_ALIGN_BYTES=64
 debug: all
 
 install: all install-incs install-lib
